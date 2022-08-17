@@ -134,6 +134,9 @@ found:
     release(&p->lock);
     return 0;
   }
+  p->alarm_ticks = 0;
+  p->alarm_current_ticks = 0;
+  p->alarm_handler = 0;
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -654,3 +657,12 @@ procdump(void)
     printf("\n");
   }
 }
+
+void sigalarm(int ticks, void (*handler)(void)) 
+{
+    struct proc *p = myproc();
+    p->alarm_ticks = ticks;
+    p->alarm_handler = handler;
+
+}
+

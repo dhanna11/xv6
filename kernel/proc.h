@@ -105,4 +105,7 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int alarm_ticks;             // Number of ticks to wait between alarm_fn invocation
+  int alarm_current_ticks;     // Current number of ticks between last invocation of alarm_handler
+  void (*alarm_handler)(void);  // sigalarm handler fn
 };

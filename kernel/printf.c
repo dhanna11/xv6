@@ -121,6 +121,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -131,4 +132,20 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+// Question: What does the frame pointer directly point to? Deferencing the frame pointer
+// will read 8-bytes into the NEXT frame! Framepointer represents the LAST address in the stack frame.
+void backtrace(void)
+{
+    char** fp = (char**)r_fp();
+    
+    char** stackBottom = (char**)PGROUNDDOWN(r_fp());
+    char** stackTop = (char**)PGROUNDUP(r_fp());
+    // if fp == stackTop, then there's no other stack frames to print.
+    while (stackBottom <= fp && fp < stackTop) {
+        printf("%p\n", *(fp - 1)); // return address
+        fp = (char**)*(fp - 2);
+    }
+   
 }

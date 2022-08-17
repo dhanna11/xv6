@@ -77,9 +77,13 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2) {
+      if (p->alarm_ticks != 0) {
+        p->alarm_current_ticks++;
 
+      }
+    yield();
+  }
   usertrapret();
 }
 
@@ -116,8 +120,12 @@ usertrapret(void)
   w_sstatus(x);
 
   // set S Exception Program Counter to the saved user pc.
-  w_sepc(p->trapframe->epc);
-
+  if (p->alarm_ticks != 0 && p->alarm_current_ticks == p->alarm_ticks) {
+      w_sepc((uint64)p->alarm_handler);
+      p->alarm_current_ticks = 0;
+  } else {
+      w_sepc(p->trapframe->epc);
+  }
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
@@ -154,7 +162,7 @@ kerneltrap()
     yield();
 
   // the yield() may have caused some traps to occur,
-  // so restore trap registers for use by kernelvec.S's sepc instruction.
+  // so restore trap registers for use by kernelvec.S's sret instruction.
   w_sepc(sepc);
   w_sstatus(sstatus);
 }
