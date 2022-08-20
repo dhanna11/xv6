@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -440,3 +442,20 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void pagefault(uint64 fault_addr) {
+
+    uint64 fault_page = PGROUNDDOWN(fault_addr);
+    char *mem = kalloc();
+    if (!mem) {
+        kill(myproc()->pid);
+        return;
+    } 
+    memset(mem, 0, PGSIZE);
+    if(mappages(myproc()->pagetable, fault_page, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      kfree(mem);
+      kill(myproc()->pid);
+      return;
+    }
+}
+
