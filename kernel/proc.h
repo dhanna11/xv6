@@ -101,6 +101,7 @@ struct proc {
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
+  struct trapframe *alt_trapframe;  // Saved trapframe for sigalarm.
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
@@ -108,4 +109,5 @@ struct proc {
   int alarm_ticks;             // Number of ticks to wait between alarm_fn invocation
   int alarm_current_ticks;     // Current number of ticks between last invocation of alarm_handler
   void (*alarm_handler)(void);  // sigalarm handler fn
+  int alarm_pending;                                
 };

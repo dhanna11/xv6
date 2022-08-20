@@ -77,10 +77,18 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
+  // TODO: Save interrupted EPC.  
+  // TODO: Save interrupted thread context?
   if(which_dev == 2) {
-      if (p->alarm_ticks != 0) {
+      if (p->alarm_ticks != 0 && !p->alarm_pending) {
         p->alarm_current_ticks++;
-
+        if (p->alarm_current_ticks == p->alarm_ticks) {
+            // save the interrupted process
+            memmove(p->alt_trapframe, p->trapframe, sizeof(struct trapframe)); 
+            p->trapframe->epc = (uint64)p->alarm_handler;
+            p->alarm_current_ticks = 0;
+            p->alarm_pending = 1;
+        }
       }
     yield();
   }
@@ -120,12 +128,7 @@ usertrapret(void)
   w_sstatus(x);
 
   // set S Exception Program Counter to the saved user pc.
-  if (p->alarm_ticks != 0 && p->alarm_current_ticks == p->alarm_ticks) {
-      w_sepc((uint64)p->alarm_handler);
-      p->alarm_current_ticks = 0;
-  } else {
-      w_sepc(p->trapframe->epc);
-  }
+  w_sepc(p->trapframe->epc);
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
