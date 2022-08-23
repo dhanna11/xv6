@@ -69,8 +69,9 @@ usertrap(void)
   else if((which_dev = devintr()) != 0){
       // ok
   }
-  else if (r_scause() == 13 || r_scause() == 15){
- //     pagefault(r_stval());
+  else if ((r_scause() == 13) || (r_scause() == 15)){
+      // 13 for load, 15 for store 
+      pagefault(r_stval());
   } 
   else {
       printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);

@@ -104,9 +104,9 @@ walkaddr(pagetable_t pagetable, uint64 va)
 
   pte = walk(pagetable, va, 0);
   if(pte == 0)
-    return 0;
+    return -1;
   if((*pte & PTE_V) == 0)
-    return 0;
+    return -1;
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
@@ -169,6 +169,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   return 0;
 }
 
+
+void vmprint(pagetable_t pagetable);
 // Remove npages of mappings starting from va. va must be
 // page-aligned. The mappings must exist.
 // Optionally free the physical memory.
@@ -182,10 +184,22 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+
+      if((pte = walk(pagetable, a, 0)) == 0) {
+          // PTE can be invalid due to lazy allocation.
+        continue;       
+      }    
+    // printf("pte is %p\n", pte);
+    if((*pte & PTE_V) == 0) {
+        // panic("uvmunmap:invalid pte");
+        // During freeproc, the pagetable and it's mapped physical pages are deallocated  
+        // via proc_freepagetable(), uvmfree(), uvmumap() and freewalk().
+        // Heap memory could possibly have been allocated via sbrk() but not
+        // faulted in before program exit, leading to invalid PTE entries.
+        // Simply zero out the PTE and continue.
+        *pte = 0;
+        continue;
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -316,19 +330,25 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+      if((pte = walk(old, i, 0)) == 0){
+          // Page directory can be unallocated due to lazy 
+          // allocation. 
+          continue;
+
+      }
+      if((*pte & PTE_V) == 0){
+          // PTE entry can be invalid due to lazy allocation.
+          continue;
+      } 
+      pa = PTE2PA(*pte);
+      flags = PTE_FLAGS(*pte);
+      if((mem = kalloc()) == 0)
+          goto err;
+      memmove(mem, (char*)pa, PGSIZE);
+      if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+          kfree(mem);
+          goto err;
+      }
   }
   return 0;
 
@@ -350,6 +370,7 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+uint64 fault(uint64);
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -357,12 +378,18 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+        return -1;    
+    }
+    else if (pa0 == -1) {
+        pa0 = fault(va0);
+        if (pa0 == -1 ) 
+            return -1;
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -386,8 +413,16 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+        return -1;
+    
+    }
+    else if (pa0 == -1) {
+  
+        pa0 = fault(va0);
+        if (pa0 == -1 ) 
+            return -1;
+    }
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
@@ -415,6 +450,13 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
+
+    else if (pa0 == -1) {
+        pa0 = fault(va0);
+        if (pa0 == -1 ) 
+            return -1;
+    }
+
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;
@@ -443,19 +485,69 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
-void pagefault(uint64 fault_addr) {
+static void vmprint_aux(pagetable_t pagetable, int level)
+{
+    for(int i = 0; i < 512; i++){
+        pte_t pte = pagetable[i];
+        if (pte & PTE_V) {
+            for (int j = 0; j <= level;j++)
+                printf(" ..");
+            printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+            if ((pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+                // this PTE points to a lower-level page table.
+                uint64 child = PTE2PA(pte);
+                vmprint_aux((pagetable_t)child, level+1);
+            } 
+        }
+    }
+}
 
+void vmprint(pagetable_t pagetable ) {
+    printf("page table %p\n", pagetable);
+    vmprint_aux(pagetable,0);
+}
+
+uint64 fault(uint64 fault_addr) {
     uint64 fault_page = PGROUNDDOWN(fault_addr);
+    if (fault_page + PGSIZE > myproc()->sz) {
+        return -1;
+    }
+    pte_t *pte;
+    if (((pte = walk(myproc()->pagetable, fault_addr, 0)) != 0) && (*pte & PTE_V) && ((*pte & PTE_U) == 0)){
+        return -1;
+    }
+    void *mem = kalloc();
+    if (!mem) {
+        return -1;
+    }
+    memset(mem, 0, PGSIZE);
+    if(mappages(myproc()->pagetable, fault_page, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_U) != 0){
+        kfree(mem);
+        return -1;
+    }
+    return (uint64)mem;
+}
+
+void pagefault(uint64 fault_addr) {
+    pte_t *pte;
+    if (((pte = walk(myproc()->pagetable, fault_addr, 0)) != 0) && (*pte & PTE_V) && ((*pte & PTE_U) == 0)){
+        kill(myproc()->pid);
+        return;
+    }
     char *mem = kalloc();
     if (!mem) {
         kill(myproc()->pid);
         return;
-    } 
+    }
     memset(mem, 0, PGSIZE);
-    if(mappages(myproc()->pagetable, fault_page, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
-      kfree(mem);
-      kill(myproc()->pid);
-      return;
+    uint64 fault_page = PGROUNDDOWN(fault_addr);
+    if (fault_addr > myproc()->sz) {
+        kill(myproc()->pid);
+        return;
+    }
+    if(mappages(myproc()->pagetable, fault_page, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_U) != 0){
+        kfree(mem);
+        kill(myproc()->pid);
+        return;
     }
 }
-
