@@ -415,10 +415,8 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
         return -1;
-    
     }
     else if (pa0 == -1) {
-  
         pa0 = fault(va0);
         if (pa0 == -1 ) 
             return -1;
@@ -450,13 +448,11 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
-
     else if (pa0 == -1) {
         pa0 = fault(va0);
         if (pa0 == -1 ) 
             return -1;
     }
-
     n = PGSIZE - (srcva - va0);
     if(n > max)
       n = max;
@@ -508,8 +504,7 @@ void vmprint(pagetable_t pagetable ) {
 }
 
 uint64 fault(uint64 fault_addr) {
-    uint64 fault_page = PGROUNDDOWN(fault_addr);
-    if (fault_page + PGSIZE > myproc()->sz) {
+    if (fault_addr >= myproc()->sz) {
         return -1;
     }
     pte_t *pte;
@@ -521,6 +516,7 @@ uint64 fault(uint64 fault_addr) {
         return -1;
     }
     memset(mem, 0, PGSIZE);
+    uint64 fault_page = PGROUNDDOWN(fault_addr);
     if(mappages(myproc()->pagetable, fault_page, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_U) != 0){
         kfree(mem);
         return -1;
@@ -541,7 +537,8 @@ void pagefault(uint64 fault_addr) {
     }
     memset(mem, 0, PGSIZE);
     uint64 fault_page = PGROUNDDOWN(fault_addr);
-    if (fault_addr > myproc()->sz) {
+    if (fault_addr >= myproc()->sz) {
+        kfree(mem);
         kill(myproc()->pid);
         return;
     }
