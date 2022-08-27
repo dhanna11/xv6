@@ -29,8 +29,6 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
-  printf("END %p\n", end); 
-  printf("PHYSTOP %p\n", PHYSTOP);
   freerange(end, (void*)PHYSTOP);
   memset(&kmem.refcount, 0, sizeof(kmem.refcount));
 }
@@ -88,10 +86,6 @@ kalloc(void)
   r = kmem.freelist;
 
   if(r) {
-      if(((uint64)r % PGSIZE) != 0 || (char*)r < end || (uint64)r >= PHYSTOP) {
-          printf("kmem.freelist %p\n", r);
-          panic("kalloc");
-      }
       kmem.freelist = r->next;
       kmem.refcount[(uint64)r/PGSIZE] = 1;
   }
