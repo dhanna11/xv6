@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h" 
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -22,8 +24,8 @@ kvmmake(void)
   pagetable_t kpgtbl;
 
   kpgtbl = (pagetable_t) kalloc();
+  
   memset(kpgtbl, 0, PGSIZE);
-
   // uart registers
   kvmmap(kpgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
@@ -301,9 +303,9 @@ int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
-  uint64 pa, i;
+  uint64 pa, i, page_num;
   uint flags;
-  char *mem;
+  //char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -311,12 +313,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    *pte &= ~PTE_W;
+    *pte |= PTE_COW; 
+    kmemlock();
+    page_num = pa / 4096;
+    incrementrefcount(page_num);
+    kmemunlock();
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
   }
@@ -347,12 +351,17 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
+  pte_t *pte;
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) 
+        return -1;
+    pte = walk(pagetable, va0, 0);
+    if (*pte & PTE_COW) {
+        pagefault(va0);
+        pa0 = walkaddr(pagetable, va0);
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -431,4 +440,39 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+// Get PTE for faulting_addr, check if it's a COW page.
+// If it isn't, panic. We haven't implemented lazy allocation.
+// Then check reference count. If the reference count is 1, 
+// we can mark the page as writable, and simple return
+// Else allocate a new physical page, copy the contents of the old page, decrement the reference count for the original page, and install the new PTE. 
+void pagefault(uint64 fault_addr) {
+    if (fault_addr >= MAXVA) {
+        kill(myproc()->pid);
+        return;
+    } 
+    
+    pte_t* pte = walk(myproc()->pagetable, fault_addr, 0);
+    if (!pte) 
+        panic("null PTE");
+    if ((*pte & PTE_COW) == 0)
+        panic("non cow page");
+    *pte |= PTE_W;
+    *pte &= ~PTE_COW;
+    kmemlock();
+    uint64 page_num = PTE2PA(*pte) / 4096;
+    if (getrefcount(page_num)== 1) {
+        kmemunlock(); 
+        return;
+    }else {
+        decrementrefcount(page_num);
+    }
+    kmemunlock();
+    uint64 mem = (uint64)kalloc();
+    if (!mem) {
+       kill(myproc()->pid);
+       return;
+    }
+    memmove((void*)mem, (void*)PTE2PA(*pte), PGSIZE);
+    *pte = PA2PTE(mem) | PTE_FLAGS(*pte);
 }

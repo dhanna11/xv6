@@ -114,11 +114,13 @@ printf(char *fmt, ...)
     release(&pr.lock);
 }
 
+void backtrace();
 void
 panic(char *s)
 {
   pr.locking = 0;
   printf("panic: ");
+  backtrace();
   printf(s);
   printf("\n");
   panicked = 1; // freeze uart output from other CPUs
@@ -131,4 +133,24 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+static inline uint64
+r_fp()
+{
+  uint64 x;
+  asm volatile("mv %0, s0" : "=r" (x) );
+  return x;
+}      
+
+void backtrace(void)
+{
+    char** fp = (char**)r_fp();
+    char** stackBottom = (char**)PGROUNDDOWN(r_fp());
+    char** stackTop = (char**)PGROUNDUP(r_fp());
+    // if fp == stackTop, then there's no other stack frames to print.
+    while (stackBottom <= fp && fp < stackTop) {
+        printf("%p\n", *(fp - 1)); // return address
+        fp = (char**)*(fp - 2);
+    }
 }
