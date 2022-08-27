@@ -350,6 +350,8 @@ sfence_vma()
 
 #define PTE2PA(pte) (((pte) >> 10) << 12)
 
+#define PA2PAGENUM(pa) (pa / PGSIZE)
+
 #define PTE_FLAGS(pte) ((pte) & 0x3FF)
 
 // extract the three 9-bit page table indices from a virtual address.

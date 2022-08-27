@@ -176,8 +176,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+     
+    if((*pte & PTE_V) == 0){
+        printf("pte %p\n", *pte); 
+        panic("uvmunmap: not mapped");
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -303,7 +306,7 @@ int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
-  uint64 pa, i, page_num;
+  uint64 pa, i;
   uint flags;
   //char *mem;
 
@@ -316,8 +319,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     *pte &= ~PTE_W;
     *pte |= PTE_COW; 
     kmemlock();
-    page_num = pa / 4096;
-    incrementrefcount(page_num);
+    incrementrefcount(PTE2PA(*pte));
     kmemunlock();
     flags = PTE_FLAGS(*pte);
     if(mappages(new, i, PGSIZE, pa, flags) != 0){
@@ -441,11 +443,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
-// Get PTE for faulting_addr, check if it's a COW page.
-// If it isn't, panic. We haven't implemented lazy allocation.
-// Then check reference count. If the reference count is 1, 
-// we can mark the page as writable, and simple return
-// Else allocate a new physical page, copy the contents of the old page, decrement the reference count for the original page, and install the new PTE. 
+
 void pagefault(uint64 fault_addr) {
     if (fault_addr >= MAXVA) {
         kill(myproc()->pid);
@@ -453,26 +451,26 @@ void pagefault(uint64 fault_addr) {
     } 
     
     pte_t* pte = walk(myproc()->pagetable, fault_addr, 0);
-    if (!pte) 
-        panic("null PTE");
-    if ((*pte & PTE_COW) == 0)
-        panic("non cow page");
+    // TODO Allocation is only necessary when refcount > 1. 
+    char* mem = kalloc();
+    if (mem == 0) {
+        printf("ran out of physical memory\n");
+        kill(myproc()->pid);
+        return;
+    }
+    
     *pte |= PTE_W;
     *pte &= ~PTE_COW;
     kmemlock();
-    uint64 page_num = PTE2PA(*pte) / 4096;
-    if (getrefcount(page_num)== 1) {
-        kmemunlock(); 
+    uint64 count = getrefcount(PTE2PA(*pte)); 
+    if (count == 1) {
+        kmemunlock();
+        kfree(mem); 
         return;
-    }else {
-        decrementrefcount(page_num);
     }
+
+    decrementrefcount(PTE2PA(*pte));
     kmemunlock();
-    uint64 mem = (uint64)kalloc();
-    if (!mem) {
-       kill(myproc()->pid);
-       return;
-    }
     memmove((void*)mem, (void*)PTE2PA(*pte), PGSIZE);
     *pte = PA2PTE(mem) | PTE_FLAGS(*pte);
 }

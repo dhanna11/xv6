@@ -29,6 +29,8 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  printf("END %p\n", end); 
+  printf("PHYSTOP %p\n", PHYSTOP);
   freerange(end, (void*)PHYSTOP);
   memset(&kmem.refcount, 0, sizeof(kmem.refcount));
 }
@@ -55,15 +57,14 @@ kfree(void *pa)
     panic("kfree");
 
   acquire(&kmem.lock);
-  uint64 index = (uint64)pa/PGSIZE;
-  int count = kmem.refcount[index];
-
+  uint64 page_num= PA2PAGENUM((uint64)pa);
+  int count = kmem.refcount[page_num];
+  if (count != 0) {
+      kmem.refcount[page_num]-=1;
+  } 
   if (count >= 2) {
-    kmem.refcount[index]-=1;
     release(&kmem.lock);
     return;
-  } else if (count == 1) {
-    kmem.refcount[index]-=1; 
   }
 
   // Fill with junk to catch dangling refs.
@@ -85,9 +86,14 @@ kalloc(void)
   struct run *r;
   acquire(&kmem.lock);
   r = kmem.freelist;
+
   if(r) {
-    kmem.freelist = r->next;
-    kmem.refcount[(uint64)r/PGSIZE] = 1;
+      if(((uint64)r % PGSIZE) != 0 || (char*)r < end || (uint64)r >= PHYSTOP) {
+          printf("kmem.freelist %p\n", r);
+          panic("kalloc");
+      }
+      kmem.freelist = r->next;
+      kmem.refcount[(uint64)r/PGSIZE] = 1;
   }
   release(&kmem.lock);
 
@@ -104,14 +110,14 @@ void kmemunlock(){
     release(&kmem.lock);
 }
 
-uint64 getrefcount(uint64 page_num){
-    return kmem.refcount[page_num];
+uint64 getrefcount(uint64 pa){
+    return kmem.refcount[PA2PAGENUM(pa)];
 }
 
-void incrementrefcount(uint64 page_num) {
-    kmem.refcount[page_num]++;
+void incrementrefcount(uint64 pa) {
+    kmem.refcount[PA2PAGENUM(pa)]++;
 }
 
-void decrementrefcount(uint64 page_num) {
-    kmem.refcount[page_num]--;
+void decrementrefcount(uint64 pa) {
+    kmem.refcount[PA2PAGENUM(pa)]--;
 }
