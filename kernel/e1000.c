@@ -19,8 +19,8 @@ static struct mbuf *rx_mbufs[RX_RING_SIZE];
 // remember where the e1000's registers live.
 static volatile uint32 *regs;
 
-struct spinlock e1000_lock;
-
+struct spinlock e1000_transmit_lock;
+struct spinlock e1000_recv_lock;
 // called by pci_init().
 // xregs is the memory address at which the
 // e1000's registers are mapped.
@@ -29,8 +29,8 @@ e1000_init(uint32 *xregs)
 {
   int i;
 
-  initlock(&e1000_lock, "e1000");
-
+  initlock(&e1000_transmit_lock, "e1000_transmit");
+  initlock(&e1000_recv_lock, "e1000_recv");
   regs = xregs;
 
   // Reset the device
@@ -92,29 +92,52 @@ e1000_init(uint32 *xregs)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
 }
 
+
 int
 e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
-  
-  return 0;
+    acquire(&e1000_transmit_lock);
+    uint64 tail_index = regs[E1000_TDT];
+    struct tx_desc * desc = &tx_ring[tail_index];
+    if ((desc->status & E1000_TXD_STAT_DD) == 0) {
+        printf("E1000 overflowed buffer");
+        release(&e1000_transmit_lock);
+        return -1; 
+    } 
+
+    if (tx_mbufs[tail_index]) {
+        mbuffree(tx_mbufs[tail_index]);
+    }
+
+    tx_mbufs[tail_index] = m;
+    desc->addr = (uint64)m->head;
+    desc->length = m->len;
+    desc->cmd |= E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+    // Update Ring position
+    regs[E1000_TDT] = (regs[E1000_TDT] + 1) % TX_RING_SIZE; 
+    release(&e1000_transmit_lock); 
+    return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+    acquire(&e1000_recv_lock);
+    uint64 index = (regs[E1000_RDT]+1) % RX_RING_SIZE;
+    struct rx_desc *desc= &rx_ring[index];
+    while (desc->status & E1000_RXD_STAT_DD) {
+        struct mbuf *m = rx_mbufs[index];
+        m->len = desc->length;
+        net_rx(m);
+        m = mbufalloc(0);
+        desc->addr = (uint64)m->head;
+        desc->status = 0;
+        rx_mbufs[index] = m;
+        regs[E1000_RDT] = index;
+        index = (index + 1) % RX_RING_SIZE;
+        desc = &rx_ring[index];
+    } 
+    release(&e1000_recv_lock);
 }
 
 void
