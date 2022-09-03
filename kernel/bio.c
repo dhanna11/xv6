@@ -23,7 +23,7 @@
 #include "fs.h"
 #include "buf.h"
 
-#define NBUF_BUCKETS 13
+#define NBUF_BUCKETS 1
 struct {
   struct spinlock lock;
   struct spinlock locks[NBUF_BUCKETS];
@@ -31,30 +31,39 @@ struct {
   struct buf buf[NBUF];
 } bcache;
 
-void remove_buf(struct buf *b, struct buf **bucket) {
-    if (b->next)  
-        b->next->prev = b->prev;
-    if (b->prev)
-        b->prev->next = b->next;
-    if (*bucket == b) 
-       *bucket = b->next; 
-}
-
-void insert_buf(struct buf *b, struct buf **bucket, struct buf *head) {
-    if (head){
-        head->prev = b;
-    }
-    b->next = head;
-    b->prev = 0; 
-    *bucket = b;
-}
-
 uint bucket_num(uint blockno) {
-    return (blockno) % NBUF_BUCKETS;
+        return (blockno) % NBUF_BUCKETS;
 }
+
+void print_buckets();
+void remove_buf(struct buf *b) {
+    struct buf **bucket = &bcache.bufs[bucket_num(b->blockno)]; 
+    struct buf *head =  bcache.bufs[bucket_num(b->blockno)]; 
+    if (head == b) {
+       *bucket = b->next;
+       b->next = 0;
+       return;
+    }
+    for (struct buf* t = *bucket; t != 0; t  = t->next) {
+        if (t->next == b) {
+           t->next = t->next->next;
+           b->next = 0;
+           return;
+        }
+    
+    }
+    panic("should not get here");
+
+}
+
+void insert_buf(struct buf *b, uint bucket) {
+    b->next = bcache.bufs[bucket];
+    bcache.bufs[bucket] = b;
+}
+
 
 void print_buckets() {
-    return;
+    printf("printing buckets\n");
     for (int bucket = 0; bucket < NBUF_BUCKETS; bucket++) {
         printf("bucket #%d \n", bucket);
         for (struct buf* b = bcache.bufs[bucket]; b != 0; b = b->next) {
@@ -76,8 +85,10 @@ binit(void)
   int blockno = 0; 
   for(b = bcache.buf; b < bcache.buf+NBUF; b++, blockno++){
     initsleeplock(&b->lock, "buffer");
-    uint bucket = bucket_num(blockno); 
-    insert_buf(b, &bcache.bufs[bucket], bcache.bufs[bucket]);
+    b->blockno = blockno; 
+     uint bucket = bucket_num(blockno);
+     
+    insert_buf(b, bucket);
   }
   print_buckets();
 }
@@ -89,43 +100,43 @@ static struct buf*
 bget(uint dev, uint blockno)
 {
     struct buf *b;
-    struct buf *lru = 0;
+    
+    acquire(&bcache.lock);
+   
     uint bucket = bucket_num(blockno);
-    acquire(&bcache.locks[bucket]);
+    //acquire(&bcache.locks[bucket]);
     for(b = bcache.bufs[bucket]; b != 0; b = b->next){
         if(b->dev == dev && b->blockno == blockno){
             b->refcnt++;
             acquire(&tickslock);
             b->timestamp = ticks;
             release(&tickslock);
-            release(&bcache.locks[bucket]);
+     //       release(&bcache.locks[bucket]);
+            release(&bcache.lock);
             acquiresleep(&b->lock);
             return b;
         }
     }
-    release(&bcache.locks[bucket]);
-    acquire(&bcache.lock);
+    //release(&bcache.locks[bucket]);
     // Not cached.
     // Loop through all possible bufs for a free buf. Make sure we move buf from old bucket to new bucket.
     for(b = bcache.buf; b < bcache.buf+NBUF; b++){
         if(b->refcnt == 0) {
-            lru = b;
             break;
         }
     }
-    if (!lru)
+    if (b->refcnt != 0)
         panic("bget: no buffers");
-    b = lru;
     uint old_bucket = bucket_num(b->blockno);
     uint new_bucket = bucket_num(blockno);
     
     if (old_bucket != new_bucket) {
-        acquire(&bcache.locks[old_bucket]);
-        remove_buf(b, &bcache.bufs[old_bucket]); 
-        release(&bcache.locks[old_bucket]);
-        acquire(&bcache.locks[new_bucket]);
-        insert_buf(b, &bcache.bufs[new_bucket], bcache.bufs[new_bucket]); 
-        release(&bcache.locks[new_bucket]);
+     //   acquire(&bcache.locks[old_bucket]);
+        remove_buf(b); 
+     //   release(&bcache.locks[old_bucket]);
+    //    acquire(&bcache.locks[new_bucket]);
+        insert_buf(b,new_bucket); 
+     //   release(&bcache.locks[new_bucket]);
     } 
     b->dev = dev;
     b->blockno = blockno;
@@ -170,19 +181,21 @@ brelse(struct buf *b)
 {
   if(!holdingsleep(&b->lock))
     panic("brelse");
- 
+
+  acquire(&bcache.lock); 
   releasesleep(&b->lock);
   
   
-  uint bucket = bucket_num(b->blockno); 
-  acquire(&bcache.locks[bucket]);
+//  uint bucket = bucket_num(b->blockno); 
+//  acquire(&bcache.locks[bucket]);
   b->refcnt--;
   
   acquire(&tickslock);
   b->timestamp = ticks;
   release(&tickslock);
   
-  release(&bcache.locks[bucket]);
+ // release(&bcache.locks[bucket]);
+  release(&bcache.lock);
 }
 
 void
