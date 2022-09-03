@@ -23,14 +23,14 @@
 #include "fs.h"
 #include "buf.h"
 
+#define NBUF_BUCKETS 13
 struct {
   struct spinlock lock;
   struct buf buf[NBUF];
 
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
-  struct buf head;
+  struct spinlock locks[NBUF_BUCKETS];
+  struct buf *bufs[NBUF_BUCKETS];
+
 } bcache;
 
 void
@@ -40,15 +40,13 @@ binit(void)
 
   initlock(&bcache.lock, "bcache");
 
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
+  for (int i = 0; i < NBUF_BUCKETS; i++) {
+    initlock(&bcache.locks[i],"bcache.bucket");
+  }
+
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+   initsleeplock(&b->lock, "buffer");
+   insert_buf(b, &bcache.bufs[0]);
   }
 }
 
