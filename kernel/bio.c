@@ -56,7 +56,6 @@ binit(void)
 {
   struct buf *b;
 
-  memset(&bcache, 0, sizeof(bcache)); 
   initlock(&bcache.lock, "bcache");
   
   for (int i = 0; i < NBUF_BUCKETS; i++) {
@@ -78,31 +77,29 @@ static struct buf*
 bget(uint dev, uint blockno)
 {
     struct buf *b;
-    struct buf* lru = 0;
+    struct buf *lru = 0;
     uint bucket = bucket_num(blockno);
-    acquire(&bcache.lock);
     acquire(&bcache.locks[bucket]);
     for(b = bcache.bufs[bucket]; b != 0; b = b->next){
         if(b->dev == dev && b->blockno == blockno){
+            printf("found block in cache\n");
             b->refcnt++;
             acquire(&tickslock);
             b->timestamp = ticks;
             release(&tickslock);
             release(&bcache.locks[bucket]);
-            release(&bcache.lock);
             acquiresleep(&b->lock);
             return b;
         }
     }
     release(&bcache.locks[bucket]);
-
+    acquire(&bcache.lock);
     // Not cached.
     // Loop through all possible bufs for a free buf. Make sure we move buf from old bucket to new bucket.
     for(b = bcache.buf; b < bcache.buf+NBUF; b++){
         if(b->refcnt == 0) {
-            if ((!lru) || (b->timestamp < lru->timestamp))
-                lru = b;
-
+            lru = b;
+            break;
         }
     }
     if (!lru)
@@ -112,6 +109,7 @@ bget(uint dev, uint blockno)
     uint new_bucket = bucket_num(blockno);
     
     if (old_bucket != new_bucket) {
+        panic("should only have 1 bucket");
         acquire(&bcache.locks[old_bucket]);
         remove_buf(b); 
         release(&bcache.locks[old_bucket]);
@@ -162,17 +160,20 @@ brelse(struct buf *b)
   if(!holdingsleep(&b->lock))
     panic("brelse");
  
-  uint bucket = bucket_num(b->blockno); 
-  acquire(&bcache.lock); 
-  acquire(&bcache.locks[bucket]);
   releasesleep(&b->lock);
+  
+  acquire(&bcache.lock); 
+  
+  uint bucket = bucket_num(b->blockno); 
+  acquire(&bcache.locks[bucket]);
   b->refcnt--;
   
   acquire(&tickslock);
   b->timestamp = ticks;
   release(&tickslock);
-  release(&bcache.lock); 
+  
   release(&bcache.locks[bucket]);
+  release(&bcache.lock); 
 }
 
 void
