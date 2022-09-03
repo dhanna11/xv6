@@ -23,7 +23,7 @@
 #include "fs.h"
 #include "buf.h"
 
-#define NBUF_BUCKETS 1
+#define NBUF_BUCKETS 13
 struct {
   struct spinlock lock;
   struct spinlock locks[NBUF_BUCKETS];
@@ -37,7 +37,7 @@ void remove_buf(struct buf *b, struct buf **bucket) {
     if (b->prev)
         b->prev->next = b->next;
     if (*bucket == b) 
-       *bucket = 0; 
+       *bucket = b->next; 
 }
 
 void insert_buf(struct buf *b, struct buf **bucket, struct buf *head) {
@@ -173,7 +173,6 @@ brelse(struct buf *b)
  
   releasesleep(&b->lock);
   
-  acquire(&bcache.lock); 
   
   uint bucket = bucket_num(b->blockno); 
   acquire(&bcache.locks[bucket]);
@@ -184,7 +183,6 @@ brelse(struct buf *b)
   release(&tickslock);
   
   release(&bcache.locks[bucket]);
-  release(&bcache.lock); 
 }
 
 void
