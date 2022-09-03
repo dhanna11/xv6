@@ -31,11 +31,13 @@ struct {
   struct buf buf[NBUF];
 } bcache;
 
-void remove_buf(struct buf *b) {
+void remove_buf(struct buf *b, struct buf **bucket) {
     if (b->next)  
         b->next->prev = b->prev;
     if (b->prev)
-        b->prev->next = b->next; 
+        b->prev->next = b->next;
+    if (*bucket == b) 
+       *bucket = 0; 
 }
 
 void insert_buf(struct buf *b, struct buf **bucket, struct buf *head) {
@@ -48,7 +50,17 @@ void insert_buf(struct buf *b, struct buf **bucket, struct buf *head) {
 }
 
 uint bucket_num(uint blockno) {
-    return (blockno+3) % NBUF_BUCKETS;
+    return (blockno) % NBUF_BUCKETS;
+}
+
+void print_buckets() {
+    return;
+    for (int bucket = 0; bucket < NBUF_BUCKETS; bucket++) {
+        printf("bucket #%d \n", bucket);
+        for (struct buf* b = bcache.bufs[bucket]; b != 0; b = b->next) {
+            printf("b->dev %d b->blockno %d b->valid %d\n", b->dev, b->blockno, b->valid);
+        }
+    }
 }
 
 void
@@ -67,7 +79,7 @@ binit(void)
     uint bucket = bucket_num(blockno); 
     insert_buf(b, &bcache.bufs[bucket], bcache.bufs[bucket]);
   }
-
+  print_buckets();
 }
 
 // Look through buffer cache for block on device dev.
@@ -82,7 +94,6 @@ bget(uint dev, uint blockno)
     acquire(&bcache.locks[bucket]);
     for(b = bcache.bufs[bucket]; b != 0; b = b->next){
         if(b->dev == dev && b->blockno == blockno){
-            printf("found block in cache\n");
             b->refcnt++;
             acquire(&tickslock);
             b->timestamp = ticks;
@@ -109,9 +120,8 @@ bget(uint dev, uint blockno)
     uint new_bucket = bucket_num(blockno);
     
     if (old_bucket != new_bucket) {
-        panic("should only have 1 bucket");
         acquire(&bcache.locks[old_bucket]);
-        remove_buf(b); 
+        remove_buf(b, &bcache.bufs[old_bucket]); 
         release(&bcache.locks[old_bucket]);
         acquire(&bcache.locks[new_bucket]);
         insert_buf(b, &bcache.bufs[new_bucket], bcache.bufs[new_bucket]); 
@@ -124,6 +134,7 @@ bget(uint dev, uint blockno)
     acquire(&tickslock);
     b->timestamp = ticks;
     release(&tickslock);
+    print_buckets();
     release(&bcache.lock);
     acquiresleep(&b->lock);
     return b;
