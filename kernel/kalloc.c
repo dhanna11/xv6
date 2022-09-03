@@ -66,7 +66,6 @@ kfree(void *pa)
   release(&kmem.locks[id]);
 }
 
-
 struct run *
 steal_page() {
     struct run* r = 0;
