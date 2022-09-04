@@ -46,7 +46,7 @@ void remove_buf(struct buf *b) {
     for (struct buf* t = *bucket; t != 0; t  = t->next) {
         if (t->next == b) {
            t->next = t->next->next;
-           t->next = 0;
+           b->next = 0;
            return;
         }
     }
