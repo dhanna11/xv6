@@ -73,19 +73,20 @@ testsymlink(void)
 
   if(write(fd1, buf, sizeof(buf)) != 4)
     fail("failed to write to a");
-
+  printf("wrote to a\n");
   if (stat_slink("/testsymlink/b", &st) != 0)
     fail("failed to stat b");
+  printf("stat slink\n");
   if(st.type != T_SYMLINK)
     fail("b isn't a symlink");
-
+  printf("openning /testsymlin/b\n");
   fd2 = open("/testsymlink/b", O_RDWR);
   if(fd2 < 0)
     fail("failed to open b");
   read(fd2, &c, 1);
   if (c != 'a')
     fail("failed to read bytes from b");
-
+  printf("about to unlink\n");
   unlink("/testsymlink/a");
   if(open("/testsymlink/b", O_RDWR) >= 0)
     fail("Should not be able to open b after deleting a");

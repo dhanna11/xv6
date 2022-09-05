@@ -283,13 +283,45 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+//recursively follow symlinks until we get to a non symlink.
+// 1. Read symbolic path from inode
+// 2. Get the corresponding inode. 
+// 3. Lock the new inode, check its type. If it's not a symbolic link break and return the locked inode
+// 4. Else unlock the inode and check the next symlink and return the locked inode
+struct inode *follow_symlink(char* path) {
+
+    char symbolic_path[MAXPATH];
+    struct inode *ip2;
+    struct inode *ip = namei(path);
+    int count = 0;
+    ilock(ip);
+    while (ip->type == T_SYMLINK) {
+        printf("following symlink"); 
+        if (count++ > 10) {
+            iunlock(ip);
+            return 0;
+        }
+        if (readi(ip, 0, (uint64)symbolic_path, 0, MAXPATH) != MAXPATH) {
+              printf("Error reading symbolic link");
+              iunlock(ip);
+              return 0; 
+        }
+        iunlock(ip);
+        ip2 = namei(symbolic_path);
+        ilock(ip2);
+        ip = ip2;
+    }
+    return ip;
+}
+
 uint64
 sys_open(void)
 {
   char path[MAXPATH];
+  char symbolic_path[MAXPATH];
   int fd, omode;
   struct file *f;
-  struct inode *ip;
+  struct inode *ip, *ip2;
   int n;
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
@@ -298,28 +330,44 @@ sys_open(void)
   begin_op();
 
   if(omode & O_CREATE){
-    ip = create(path, T_FILE, 0, 0);
-    if(ip == 0){
-      end_op();
-      return -1;
-    }
+      ip = create(path, T_FILE, 0, 0);
+      if(ip == 0){
+          end_op();
+          return -1;
+      }
   } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
-    }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
-      iunlockput(ip);
-      end_op();
-      return -1;
-    }
+      if((ip = namei(path)) == 0){
+          end_op();
+          return -1;
+      }
+      ilock(ip);
+      if(ip->type == T_DIR && omode != O_RDONLY){
+          iunlockput(ip);
+          end_op();
+          return -1;
+      }
   }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
     iunlockput(ip);
     end_op();
     return -1;
+  }
+  if (ip->type == T_SYMLINK) {
+      printf("openned symlink"); 
+      if ((O_NOFOLLOW & omode) == 0) {
+          if (readi(ip, 0, (uint64)symbolic_path, 0, MAXPATH) != MAXPATH)
+              panic("Error reading symbolic link");
+          ip2 = follow_symlink(symbolic_path);
+          if (ip2 == 0) {
+              printf("infinite loop");
+              iunlock(ip);
+              end_op();
+              return -1;
+          }
+          iunlock(ip);
+          ip = ip2;
+      } 
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -483,4 +531,47 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+    char target[MAXPATH];
+    char path[MAXPATH];
+    char name[DIRSIZ];
+    struct inode *dp, *ip;
+    if ((argstr(0, target, MAXPATH) < 0) || (argstr(1, path, MAXPATH) < 0)) {
+        return -1;
+    }
+    begin_op();
+    if ((dp = nameiparent(path, name)) == 0) {
+        printf("directory does not exist");
+        goto bad;
+    }
+    ilock(dp);
+    if ((ip = dirlookup(dp, name, 0)) != 0) {
+        iunlock(dp);
+        printf("file already exists!");
+        goto bad;
+    }
+    if ((ip = ialloc(dp->dev, T_SYMLINK)) == 0)
+        panic("sys_symlink: ialloc");
+
+    ilock(ip);
+    if (dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0) {
+       iunlock(dp);
+       iunlock(ip);
+       goto bad; 
+    } 
+    if (writei(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH) {
+        panic("sys_symlink unable to write target to inode");
+    }
+    iunlock(dp);
+    iunlock(ip); 
+    end_op();
+    return 0;
+
+bad:
+    end_op();
+    return -1;
 }
