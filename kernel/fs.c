@@ -373,13 +373,15 @@ iunlockput(struct inode *ip)
 // listed in block ip->addrs[NDIRECT].
 
 // Return the disk block address of the nth block in inode ip.
+
 // If there is no such block, bmap allocates one.
-static uint
+    static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
   struct buf *bp;
-
+  struct buf *double_indirect;
+  struct buf *single_indirect; 
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0)
       ip->addrs[bn] = addr = balloc(ip->dev);
@@ -387,20 +389,43 @@ bmap(struct inode *ip, uint bn)
   }
   bn -= NDIRECT;
 
-  if(bn < NINDIRECT){
-    // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0)
-      ip->addrs[NDIRECT] = addr = balloc(ip->dev);
-    bp = bread(ip->dev, addr);
-    a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
-      a[bn] = addr = balloc(ip->dev);
-      log_write(bp);
-    }
-    brelse(bp);
-    return addr;
+  if(bn < NINDIRECT) {
+      // Load indirect block, allocating if necessary.
+      if((addr = ip->addrs[NDIRECT]) == 0)
+          ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+      bp = bread(ip->dev, addr);
+      a = (uint*)bp->data;
+      if((addr = a[bn]) == 0){
+          a[bn] = addr = balloc(ip->dev);
+          log_write(bp);
+      }
+      brelse(bp);
+      return addr;
   }
 
+  bn-=NINDIRECT;
+  if (bn < MAXFILE) {
+      // Load double indirect block, allocating if necessary.
+      if ((addr = ip->addrs[NDIRECT+1]) == 0)
+          ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
+      double_indirect = bread(ip->dev, addr);
+      a = (uint*)double_indirect->data;
+      // Load the corresponding indirect block, allocating if necessary.
+      if ((addr = a[bn/NINDIRECT]) == 0){
+          a[bn/NINDIRECT] = addr = balloc(ip->dev);
+          log_write(double_indirect);
+      }
+      single_indirect = bread(ip->dev, addr);
+      a = (uint*)single_indirect->data;
+      // Load the corresponding data block, allocating if necessary.
+      if ((addr = a[bn%NINDIRECT]) == 0) {
+          a[bn%NINDIRECT] = addr = balloc(ip->dev);
+          log_write(single_indirect);
+      } 
+      brelse(double_indirect);
+      brelse(single_indirect); 
+      return addr;
+  }
   panic("bmap: out of range");
 }
 
@@ -409,31 +434,49 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+    int i, j;
+    struct buf *bp;
+    struct buf *double_indirect;
+    struct buf *single_indirect;
+    uint *a, *b;
 
-  for(i = 0; i < NDIRECT; i++){
-    if(ip->addrs[i]){
-      bfree(ip->dev, ip->addrs[i]);
-      ip->addrs[i] = 0;
+    for(i = 0; i < NDIRECT; i++){
+        if(ip->addrs[i]){
+            bfree(ip->dev, ip->addrs[i]);
+            ip->addrs[i] = 0;
+        }
     }
-  }
 
-  if(ip->addrs[NDIRECT]){
-    bp = bread(ip->dev, ip->addrs[NDIRECT]);
-    a = (uint*)bp->data;
-    for(j = 0; j < NINDIRECT; j++){
-      if(a[j])
-        bfree(ip->dev, a[j]);
+    if(ip->addrs[NDIRECT]){
+        bp = bread(ip->dev, ip->addrs[NDIRECT]);
+        a = (uint*)bp->data;
+        for(j = 0; j < NINDIRECT; j++){
+            if(a[j])
+                bfree(ip->dev, a[j]);
+        }
+        brelse(bp);
+        bfree(ip->dev, ip->addrs[NDIRECT]);
+        ip->addrs[NDIRECT] = 0;
     }
-    brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT]);
-    ip->addrs[NDIRECT] = 0;
-  }
-
-  ip->size = 0;
-  iupdate(ip);
+    if (ip->addrs[NDIRECT+1]) {
+        double_indirect = bread(ip->dev, ip->addrs[NDIRECT+1]); 
+        a = (uint*)double_indirect->data;
+        for (i = 0; i < NINDIRECT; i++) {
+            single_indirect = bread(ip->dev, a[i]);
+            b = (uint*)single_indirect->data; 
+            for (j = 0; j < NINDIRECT; j++) {
+                if (b[j])
+                    bfree(ip->dev, b[j]);
+            }
+            brelse(single_indirect);
+            bfree(ip->dev, a[i]);
+        }
+        brelse(double_indirect);
+        bfree(ip->dev, ip->addrs[NDIRECT+1]);
+        ip->addrs[NDIRECT+1] = 0;
+    }
+    ip->size = 0;
+    iupdate(ip);
 }
 
 // Copy stat information from inode.
