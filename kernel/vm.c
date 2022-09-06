@@ -5,7 +5,11 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
-
+#include "spinlock.h"
+#include "proc.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 /*
  * the kernel's page table.
  */
@@ -14,6 +18,19 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+typedef struct vma {
+    uint64 addr;
+    uint64 length;
+    int prot;
+    int flags;
+    struct file* file;
+    uint64 off;
+    int valid;
+    struct vma* next;
+} vma;
+
+vma vmas[16];
 
 // Make a direct-map page table for the kernel.
 pagetable_t
@@ -54,6 +71,7 @@ void
 kvminit(void)
 {
   kernel_pagetable = kvmmake();
+  memset(vmas, 0, sizeof(vmas));
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -431,4 +449,75 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+// Allocate vma, add it to proc's vma's.
+
+uint64 sys_mmap(void) {
+    // arg0 (addr) and arg5 (offset) is assumed to be 0
+    int length;
+    int prot;
+    int flags;
+    int fd;
+    if (argint(1, &length) < 0)
+        return -1;
+    if(argint(2, &prot) < 0)
+        return -1;
+    if(argint(3, &flags) < 0)
+        return -1;
+    if (argint(4, &fd) < 0)
+        return -1;
+
+    int i;
+    for (i = 0; i < sizeof(vma); i++) {
+       if (!vmas[i].valid)
+           break;
+    }
+    vmas[i].valid = 1;
+    vmas[i].length = length;
+    vmas[i].prot = prot;
+    vmas[i].flags = flags;
+    vmas[i].file = myproc()->ofile[fd]; 
+    filedup(vmas[i].file); 
+    vmas[i].next = myproc()->vma;
+    myproc()->vma = &vmas[i];
+    uint npages = length / PGSIZE + ((length % PGSIZE) != 0);
+    myproc()->vmaend -=  PGSIZE*npages;
+    vmas[i].addr = myproc()->vmaend;
+    return vmas[i].addr;
+}
+
+uint64 sys_munmap(void) {
+    return -1;
+}
+
+void pagefault(uint64 fault_addr) {
+   
+    struct vma *p; 
+    for (p = myproc()->vma; p != 0; p = p->next) {
+        if ((p->addr <= fault_addr) && (fault_addr < p->addr + p->length)) 
+            break;
+    }
+    if (!p)
+        panic("Can't find vma");
+    uint64 fault_page = PGROUNDDOWN(fault_addr);
+    char *mem = kalloc();
+    if (!mem) {
+        kill(myproc()->pid);
+        return;
+    }
+    memset(mem, 0, PGSIZE);
+    int perm = PTE_U;
+    if (p->prot & PROT_READ)
+        perm |= PTE_R;
+    if (p->prot & PROT_WRITE)
+        perm |= PTE_W;
+    if(mappages(myproc()->pagetable, fault_page, PGSIZE, (uint64)mem, perm) != 0) {
+        kfree(mem);
+        kill(myproc()->pid);
+        return; 
+    }
+    ilock(p->file->ip);
+    readi(p->file->ip, 1, fault_page, p->off, PGSIZE);
+    p->off+=PGSIZE;     
+    iunlock(p->file->ip);
 }

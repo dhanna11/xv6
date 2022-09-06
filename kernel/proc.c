@@ -53,6 +53,7 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->kstack = KSTACK((int) (p - proc));
+      p->vmaend = (uint64)VMA_END;
   }
 }
 
