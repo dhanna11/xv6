@@ -345,6 +345,9 @@ exit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  for (struct vma *p = myproc()->vma; p != 0; p = p->next) {
+      unmapvma(p, p->addr, p->addr + p->length); 
+  }
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){

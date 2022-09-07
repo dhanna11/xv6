@@ -8,6 +8,16 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+typedef struct vma {
+    uint64 addr;
+    uint64 length;
+    int prot;
+    int flags;
+    struct file* file;
+    uint64 off;
+    int valid;
+    struct vma* next;
+} vma;
 
 // bio.c
 void            binit(void);
@@ -171,6 +181,7 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            pagefault(uint64);
+void            unmapvma(struct vma*, uint64, uint64);
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);

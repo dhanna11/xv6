@@ -19,17 +19,6 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-typedef struct vma {
-    uint64 addr;
-    uint64 length;
-    int prot;
-    int flags;
-    struct file* file;
-    uint64 off;
-    int valid;
-    struct vma* next;
-} vma;
-
 vma vmas[16];
 
 // Make a direct-map page table for the kernel.
@@ -454,11 +443,11 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 uint64 sys_mmap(void) {
     // arg0 (addr) and arg5 (offset) is assumed to be 0
-    int length;
+    uint64 length;
     int prot;
     int flags;
     int fd;
-    if (argint(1, &length) < 0)
+    if (argaddr(1, &length) < 0)
         return -1;
     if(argint(2, &prot) < 0)
         return -1;
@@ -472,6 +461,10 @@ uint64 sys_mmap(void) {
        if (!vmas[i].valid)
            break;
     }
+    printf("%d %d", flags, myproc()->ofile[fd]->writable); 
+    if ((prot & PROT_WRITE) && (myproc()->ofile[fd]->writable == 0) && ((flags & MAP_PRIVATE) == 0))
+        return -1;
+   
     vmas[i].valid = 1;
     vmas[i].length = length;
     vmas[i].prot = prot;
@@ -486,8 +479,54 @@ uint64 sys_mmap(void) {
     return vmas[i].addr;
 }
 
+void freevma(struct vma *p) {
+    p->valid = 0; 
+    if (myproc()->vma == p) {
+        myproc()->vma = myproc()->vma->next;
+        return;
+    }
+    for (struct vma *t = myproc()->vma; t != 0; t = t->next) {
+        if (t->next == p) 
+           t->next = t->next->next; 
+    } 
+}
+
+void unmapvma(struct vma *p, uint64 start, uint64 end) {
+    int npages = (end - start) / PGSIZE;
+
+    if (p->flags & MAP_SHARED) {
+        filewrite(p->file, start, npages*PGSIZE); 
+    }
+
+    uvmunmap(myproc()->pagetable, start, npages, 1);
+    p->length-= PGSIZE*npages;
+
+    if ((p->addr == start) && (p->addr + p->length > end)) {
+        p->addr += PGSIZE*npages;
+    }
+    else if ((p->addr == start) && (p->addr + p->length == end)) {
+        freevma(p); 
+    } 
+}
+
 uint64 sys_munmap(void) {
-    return -1;
+    uint64 addr;
+    uint64 length;
+    argaddr(0, &addr);
+    argaddr(1, &length);
+    struct vma *p;
+    for (p = myproc()->vma; p != 0; p = p->next) {
+        uint64 vma_start = p->addr;
+        uint64 vma_end = p->addr + p->length;
+        uint64 munmap_start = addr;
+        uint64 munmap_end = addr + length; 
+        if ((munmap_start >= vma_start && munmap_start < vma_end) ||  
+                (munmap_end >= vma_start && munmap_end < vma_end))  {
+            unmapvma(p, munmap_start, munmap_end);
+
+        } 
+    }
+    return 0;
 }
 
 void pagefault(uint64 fault_addr) {
