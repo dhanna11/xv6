@@ -439,7 +439,16 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
-// Allocate vma, add it to proc's vma's.
+
+struct vma * allocvma() {
+    for (int i = 0; i < sizeof(vma); i++) {
+        if (!vmas[i].valid) {
+            vmas[i].valid = 1;
+            return &vmas[i];
+        }
+    }
+    return 0;
+}
 
 uint64 sys_mmap(void) {
     // arg0 (addr) and arg5 (offset) is assumed to be 0
@@ -456,31 +465,47 @@ uint64 sys_mmap(void) {
     if (argint(4, &fd) < 0)
         return -1;
 
-    int i;
-    for (i = 0; i < sizeof(vma); i++) {
-       if (!vmas[i].valid)
-           break;
-    }
-    printf("%d %d", flags, myproc()->ofile[fd]->writable); 
     if ((prot & PROT_WRITE) && (myproc()->ofile[fd]->writable == 0) && ((flags & MAP_PRIVATE) == 0))
         return -1;
-   
-    vmas[i].valid = 1;
-    vmas[i].length = length;
-    vmas[i].prot = prot;
-    vmas[i].flags = flags;
-    vmas[i].file = myproc()->ofile[fd]; 
-    filedup(vmas[i].file); 
-    vmas[i].next = myproc()->vma;
-    myproc()->vma = &vmas[i];
+  
+    struct vma* vma = allocvma();
+    if (!vma)
+        return -1;
+
+    vma->valid = 1;
+    vma->length = length;
+    vma->prot = prot;
+    vma->flags = flags;
+    vma->file = myproc()->ofile[fd]; 
+    filedup(vma->file);
+    vma->next = myproc()->vma;
+    myproc()->vma = vma;
     uint npages = length / PGSIZE + ((length % PGSIZE) != 0);
     myproc()->vmaend -=  PGSIZE*npages;
-    vmas[i].addr = myproc()->vmaend;
-    return vmas[i].addr;
+    vma->addr = myproc()->vmaend;
+    return vma->addr;
+}
+
+
+// Allocate vma, add it to proc's vma's.
+void copyvma(struct proc *parent, struct proc *child) {
+    for (struct vma *v = parent->vma; v != 0; v = v->next) {
+        struct vma * vc = allocvma();
+        vc->addr = v->addr;
+        vc->length = v->length;
+        vc->prot = v->prot;
+        vc->flags = v->flags;
+        vc->file = v->file;
+        filedup(vc->file);
+        vc->next = child->vma;
+        child->vma = vc;
+    } 
+    parent->vmaend = child->vmaend;
 }
 
 void freevma(struct vma *p) {
-    p->valid = 0; 
+    p->valid = 0;
+     
     if (myproc()->vma == p) {
         myproc()->vma = myproc()->vma->next;
         return;
@@ -493,18 +518,24 @@ void freevma(struct vma *p) {
 
 void unmapvma(struct vma *p, uint64 start, uint64 end) {
     int npages = (end - start) / PGSIZE;
-
     if (p->flags & MAP_SHARED) {
         filewrite(p->file, start, npages*PGSIZE); 
     }
+    pte_t *pte = walk(myproc()->pagetable, start, 0);
+    if (*pte & PTE_V)
+        uvmunmap(myproc()->pagetable, start, npages, 1);
 
-    uvmunmap(myproc()->pagetable, start, npages, 1);
-    p->length-= PGSIZE*npages;
-
-    if ((p->addr == start) && (p->addr + p->length > end)) {
+    // Free the beginning.
+    if (p->addr == start && p->addr + p->length != end) {
         p->addr += PGSIZE*npages;
+        p->length-= PGSIZE*npages;
     }
+    else if ((p->addr != start) && (p->addr + p->length == end)) {
+        p->length-= PGSIZE*npages;
+    } 
     else if ((p->addr == start) && (p->addr + p->length == end)) {
+        p->length = 0;
+        p->addr = 0; 
         freevma(p); 
     } 
 }
@@ -520,8 +551,8 @@ uint64 sys_munmap(void) {
         uint64 vma_end = p->addr + p->length;
         uint64 munmap_start = addr;
         uint64 munmap_end = addr + length; 
-        if ((munmap_start >= vma_start && munmap_start < vma_end) ||  
-                (munmap_end >= vma_start && munmap_end < vma_end))  {
+        if ((munmap_start >= vma_start && munmap_start <= vma_end) &&  
+                (munmap_end >= vma_start && munmap_end <= vma_end))  {
             unmapvma(p, munmap_start, munmap_end);
 
         } 
@@ -530,14 +561,16 @@ uint64 sys_munmap(void) {
 }
 
 void pagefault(uint64 fault_addr) {
-   
-    struct vma *p; 
+    struct vma *p;
     for (p = myproc()->vma; p != 0; p = p->next) {
         if ((p->addr <= fault_addr) && (fault_addr < p->addr + p->length)) 
             break;
     }
-    if (!p)
-        panic("Can't find vma");
+    if (!p){
+        kill(myproc()->pid);
+        return;
+    }
+
     uint64 fault_page = PGROUNDDOWN(fault_addr);
     char *mem = kalloc();
     if (!mem) {
@@ -556,7 +589,7 @@ void pagefault(uint64 fault_addr) {
         return; 
     }
     ilock(p->file->ip);
-    readi(p->file->ip, 1, fault_page, p->off, PGSIZE);
-    p->off+=PGSIZE;     
+    uint index = (fault_page - p->addr) / PGSIZE;
+    readi(p->file->ip, 1, fault_page, index * PGSIZE, PGSIZE);
     iunlock(p->file->ip);
 }

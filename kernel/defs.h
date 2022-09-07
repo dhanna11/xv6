@@ -14,7 +14,6 @@ typedef struct vma {
     int prot;
     int flags;
     struct file* file;
-    uint64 off;
     int valid;
     struct vma* next;
 } vma;
@@ -182,6 +181,8 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            pagefault(uint64);
 void            unmapvma(struct vma*, uint64, uint64);
+void            copyvma(struct proc*, struct proc*);
+
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);
