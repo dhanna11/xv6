@@ -30,6 +30,18 @@ sys_fork(void)
 }
 
 uint64
+sys_clone(void) 
+{
+    uint64 thread;
+    uint64 start_routine;
+    uint64 arg;
+    argaddr(0, &thread);
+    argaddr(1, &start_routine);
+    argaddr(2, &arg);
+    return clone( (void(*)(void*))thread, (void*)start_routine, (void*)arg);
+}
+
+uint64
 sys_wait(void)
 {
   uint64 p;

@@ -318,6 +318,63 @@ fork(void)
   return pid;
 }
 
+int
+clone(void(*fcn)(void*), void* arg, void *stack)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+
+  printf("cloning process");  
+  // Allocate process.
+  if((np = allocproc()) == 0){
+    return -1;
+  }
+  // TODO: What if parent exits before us?
+  // TODO: Set np to share pagetable with parent
+  // TODO: Map np trapframe into parent.
+  // TODO: Fix return address in stack
+  proc_freepagetable(np->pagetable, 0);
+  
+  np->pagetable = p->pagetable;
+  //mappages(p->pagetable, TRAPFRAME+PGSIZE, PGSIZE,                
+  //        (uint64)(np->trapframe), PTE_R | PTE_W);
+  
+  np->sz = p->sz;
+  // copy saved user registers.
+  *(np->trapframe) = *(p->trapframe);
+  // Assume clone call is passed PGSIZE stack space. Point
+  // sp to END of allocated memory
+  np->trapframe->sp = (uint64)stack + PGSIZE;
+//  *((uint64*)stack+PGSIZE-1) = (uint64)arg;
+//  *((uint64*)stack+PGSIZE-2) = (uint64)fcn;
+  np->trapframe->epc = (uint64)fcn;
+  np->trapframe->a0 = (uint64)arg;
+  // increment reference counts on open file descriptors.
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
+      np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = idup(p->cwd);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+
+  pid = np->pid;
+
+  release(&np->lock);
+
+  acquire(&wait_lock);
+  np->parent = p;
+  release(&wait_lock);
+
+  acquire(&np->lock);
+  np->state = RUNNABLE;
+  release(&np->lock);
+  printf("p->pid %d, cloned process %d\n", p->pid, pid);
+  return pid;
+}
+
+
+
 // Pass p's abandoned children to init.
 // Caller must hold wait_lock.
 void
